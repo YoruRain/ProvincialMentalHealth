@@ -3,10 +3,49 @@ import re
 import sys
 import os
 import re
+import logging
+import logging.config
+import time
+from datetime import datetime
 from openai import OpenAI
+
+# 禁用所有API客户端的HTTP请求日志
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import dbPy
+
+# 配置日志系统
+def setup_logger():
+    """配置日志系统"""
+    # 创建logs目录（如果不存在）
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    
+    # 加载日志配置
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logging.config")
+    logging.config.fileConfig(config_path, encoding='utf-8')
+    
+    return logging.getLogger("cleaning")
+
+# 创建logger实例
+logger = setup_logger()
+
+def write_file(file_path: str, file_name: str, data):
+    if len(data) == 0:
+        return
+    with open(os.path.join(file_path, file_name), "a", encoding="utf-8") as f:
+        if isinstance(data, list):
+            f.writelines('\n'.join(data))
+            f.write('\n')
+        else:
+            f.write(f"{data}\n")
+    print(f"已将内容写入文件 {file_path}/{file_name}")
 
 
 def is_valid(text: str) -> bool:
@@ -20,8 +59,8 @@ def is_valid(text: str) -> bool:
     Returns:
         bool: 微博是否是否有效
     """
-
     if len(text.strip()) <= 1:
+        logger.debug(f"微博内容过短，判定为无效: {text}")
         return False
     
     # 广告、转载相关关键词
@@ -30,12 +69,12 @@ def is_valid(text: str) -> bool:
         '我在参与', '连续签到', '粉打卡', '年度歌曲', 
         '免费围观', '关注超话', "蚂蚁庄园：", "森林驿站", 
         "头条文章", "注册微博", "注册微博", "闲鱼发布",
-        "闲鱼号", "头像挂件"
+        "闲鱼号", "头像挂件", "试试手气"
     ]
 
     # 微博中含有任意一个关键词，则认为无效
     if any(kw in text for kw in ad_keywords):
-        # print(f"微博“{text}”为抽奖、广告、转载等微博，删除")
+        logger.debug(f"微博包含广告关键词，判定为无效: {text}")
         return False
     
     return True
@@ -51,10 +90,10 @@ def clean_text(text: str) -> str:
     Returns:
         str: 清洗后的微博文本
     """
-    # 去除分享来源信息（直接将“分享自”及其后面的所有信息去除）
+    # 去除分享来源信息（直接将"分享自"及其后面的所有信息去除）
     text = re.sub(r'(?:[（(])?分享自(?!己).*$', '', text)
 
-    # 去除“分享图片/视频”文本
+    # 去除"分享图片/视频"文本
     text = re.sub(r'分享(图片|视频)', '', text)
     
     # 去除多余空格
@@ -78,6 +117,13 @@ def get_user_dict(cleaned=True, limit=50) -> dict:
     Returns:
         dict: 用户字典，键为用户的uid，值为用户的基本信息和所有微博
     """
+
+    def get_id_ip_dict(file_path: str, file_name: str) -> dict:
+        with open(os.path.join(file_path, file_name), "r", encoding="utf-8") as f:
+            id_ip_list = f.readlines()
+        id_ip_dict = {line.split(",")[0]: line.split(",")[1].strip() for line in id_ip_list}
+        return id_ip_dict
+
     if cleaned:
         WHERE = "to_be_cleaned != 1 AND done = 0"
     else:
@@ -86,12 +132,29 @@ def get_user_dict(cleaned=True, limit=50) -> dict:
     LIMIT = limit
 
     users = dbPy.get_users(where=WHERE, limit=LIMIT)
+    if len(users) == 0:
+        logging.info("已清洗完毕！")
+        sys.exit(1)
+    if len(users) < limit:
+        logging.info(f"获取用户数为：{len(users)}，即将完成清洗！")
+    
     user_dict = {}
     user_id_list = [user["uid"] for user in users]
     weibo_list = dbPy.get_weibos(where=f"user_id in ({', '.join(user_id_list)})")
+
+    id_ip_dict = get_id_ip_dict(file_path=r"collecting", file_name="user_id_ip.txt")
+
     for user in users:
         user_id = user["uid"]
         user["weibo"] = [weibo for weibo in weibo_list if weibo["uid"] == user_id]
+
+        if not user["IP"]:
+            try:
+                user["IP"] = id_ip_dict[user_id]
+                logger.info(f"已获取用户 {user_id} 的IP地址： {user['IP']}")
+            except KeyError:
+                user["IP"] = "未知"
+                logger.warning(f"未获取到用户 {user_id} 的IP地址")
         user_dict[user_id] = user
 
     return user_dict
@@ -100,9 +163,13 @@ def get_user_dict(cleaned=True, limit=50) -> dict:
 def simple_clean(user_dict: dict):
     """对用户字典进行简单清洗，删除无效微博"""
     users_to_remove = []
+    total_weibos_before = 0
+    total_weibos_after = 0
 
     for user_id, user_info in user_dict.items():
         weibo_list = user_info["weibo"]
+        total_weibos_before += len(weibo_list)
+        
         for weibo in weibo_list:
             weibo["text"] = clean_text(weibo["text"])
         before_len = len(weibo_list)
@@ -111,13 +178,18 @@ def simple_clean(user_dict: dict):
         after_len = len(weibo_list)
         user_info["weibo"] = weibo_list
         removed_num = before_len - after_len
+        total_weibos_after += after_len
+        
         if after_len < 10:
-            print(f"删除了用户 {user_id} 的 {removed_num} 条无效微博，剩余微博数 {after_len} 过少，清除出数据集")
+            logger.info(f"用户 {user_id} 的微博数量过少，将被移除: 删除 {removed_num} 条无效微博，剩余 {after_len} 条")
             users_to_remove.append(user_id)
+        elif removed_num > 0:
+            logger.info(f"用户 {user_id} 清洗完成： 删除 {removed_num} 条无效微博，剩余 {after_len} 条")
 
     for user_id in users_to_remove:
         del user_dict[user_id]
     
+    logger.info(f"清洗完成：移除了 {len(users_to_remove)} 个用户")
     return user_dict
 
 
@@ -163,17 +235,16 @@ def sample_weibos(user_dict: dict, max_weibo_len: int = 200, max_weibo_count: in
     return sample_weibo_dict
 
 
-def validity_analysis(llm_config: dict, user_weibo) -> str:
+def validity_analysis(llm_config: dict, user_weibo) -> tuple:
     """
     对用户微博进行有效性分析
 
     Args:
         llm_config (dict): LLM配置
-        prompt (str): 提示词
         user_weibo (Any): 用户微博
 
     Returns:
-        str: 有效性分析结果
+        tuple: (分析结果, 是否包含高风险内容)
     """
     base_url = llm_config["base_url"]
     model = llm_config["model"]
@@ -200,23 +271,40 @@ def validity_analysis(llm_config: dict, user_weibo) -> str:
 • 商品交易/广告推广信息
 • 抽象理论/鸡汤语录/政策转载
 接下来我将给出一个JSON文件，其中键是用户ID，值是经过采样后的微博内容。
-请直接为我返回数字“0”或“1”，“1”代表用户是生活分享账号，“0”代表用户不是生活分享账号。除此之外无需返回其他内容。
+请直接为我返回数字"0"或"1"，"1"代表用户是生活分享账号，"0"代表用户不是生活分享账号。除此之外无需返回其他内容。
 """
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": user_weibo},
-        ],
-        temperature=1.0, 
-        stream=False
-    )
+    max_retries = 5
+    retry_count = 0
+    retry_delay = 5  # 重试间隔（秒）
 
-    return response.choices[0].message.content
+    while retry_count < max_retries:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_weibo},
+                ],
+                temperature=1.0, 
+                stream=False
+            )
+            return response.choices[0].message.content, False
+        except Exception as e:
+            error_str = str(e)
+            if "content_filter" in error_str and "high risk" in error_str:
+                logger.warning(f"检测到高风险内容，跳过该用户")
+                return None, True
+            
+            retry_count += 1
+            if retry_count >= max_retries:
+                logger.error(f"{model} 模型API调用失败次数超过{max_retries}次，程序退出")
+                sys.exit(1)  # 退出程序
+            logger.warning(f"{model} 模型API调用失败，正在进行第{retry_count}次重试: {str(e)}")
+            time.sleep(retry_delay)  # 等待一段时间后重试
 
 
-config_file = r"Provincial_Mental_Health_2\weibo_config.json"
+config_file = r"weibo_config.json"
 with open(config_file, "r", encoding="utf-8") as f:
     config = json.load(f)
 
@@ -233,6 +321,8 @@ def multi_model_validity_analysis(user_weibo_dict: dict) -> dict:
     """
     # 存储所有用户的分析结果
     all_results = {}
+    total_users = len(user_weibo_dict)
+    processed_users = 0
     
     # 定义要使用的三个模型配置
     models = [
@@ -250,31 +340,33 @@ def multi_model_validity_analysis(user_weibo_dict: dict) -> dict:
         # 使用三个不同的模型进行分析
         for model_config in models:
             try:
-                result = validity_analysis(model_config, test_data)
+                result, is_high_risk = validity_analysis(model_config, test_data)
+                if is_high_risk:
+                    # 将高风险用户ID写入文件
+                    write_file("./cleaning", "users_error.txt", user_id)
+                    logger.warning(f"用户 {user_id} 包含高风险内容，已记录并跳过")
+                    break  # 跳出模型循环，处理下一个用户
+                
                 # 确保结果是 "0" 或 "1"
-                if result.strip() in ['0', '1']:
+                if result and result.strip() in ['0', '1']:
                     user_results.append(int(result.strip()))
                 else:
                     model = model_config["model"]
-                    print(f"模型 {model} 分析用户 {user_id} 时的返回结果：{result} 存在问题")
-                    user_results.append(None)  # 标记无效结果
+                    logger.error(f"模型 {model} 分析用户 {user_id} 时返回异常结果: {result}")
+                    user_results.append(None)
             except Exception as e:
-                print(f"分析用户 {user_id} 时发生错误: {str(e)}")
+                logger.error(f"分析用户 {user_id} 时发生错误: {str(e)}")
                 user_results.append(None)
         
-        # 存储该用户的所有模型结果
-        all_results[user_id] = user_results
+        if not is_high_risk:  # 只有在不是高风险内容的情况下才记录结果
+            all_results[user_id] = user_results
+            logger.info(f"用户 {user_id} 分析完成，分析结果：{user_results}")
         
-        # 打印进度
-        print(f"已完成用户 {user_id} 的分析，结果: {user_results}")
+        processed_users += 1
+        logger.info(f"进度: {processed_users}/{total_users} 用户分析完成")
     
     return all_results
 
-
-def write_file(file_path: str, file_name: str, data: list):
-    with open(os.path.join(file_path, file_name), "a", encoding="utf-8") as f:
-        f.writelines(data)
-    print(f"已将结果写入文件 {file_path}/{file_name}")
 
 
 def classify_users(results: dict, threshold: int = 2) -> dict:
@@ -308,19 +400,25 @@ def insert_cleaned_users_weibos(user_dict: dict):
 
 
 def batch_clean(batch_size: int = 10):
-    print(f"当前清洗的用户批次大小为 {batch_size}")
+    logger.info(f"开始新的清洗批次，批次大小: {batch_size}")
+    
     user_dict = get_user_dict(limit=batch_size)
+    logger.info(f"获取到 {len(user_dict)} 个用户数据")
 
     user_id_list = list(user_dict.keys())
-    dbPy.update_user_done(user_id_list)
+
 
     user_dict = simple_clean(user_dict)
+    logger.info(f"简单清洗后剩余 {len(user_dict)} 个用户")
 
     sample_weibo_dict = sample_weibos(user_dict)
+    logger.info("完成微博采样")
 
     results = multi_model_validity_analysis(sample_weibo_dict)
+    logger.info("完成多模型有效性分析")
 
     users_to_remove, users_to_examine = classify_users(results)
+    logger.info(f"分类结果：需移除 {len(users_to_remove)} 个用户，需人工检查 {len(users_to_examine)} 个用户")
 
     for user_id in users_to_remove:
         del user_dict[user_id]
@@ -328,11 +426,37 @@ def batch_clean(batch_size: int = 10):
     for user_id in users_to_examine:
         del user_dict[user_id]
 
-    write_file(users_to_examine, "Provincial_Mental_Health_2/cleaning", "users_to_examine.txt")
+    write_file("./cleaning", "users_to_examine.txt", users_to_examine)
+    logger.info(f"已将 {len(users_to_examine)} 个需人工检查的用户ID写入文件")
 
-    print(f"经过清洗，{batch_size} 批次中，有效用户数：{len(user_dict)}，人工检查数：{len(users_to_examine)}")
+    logger.info(f"清洗完成：最终有效用户数 {len(user_dict)}")
     insert_cleaned_users_weibos(user_dict)
+    logger.info("数据已成功写入清洗后的数据表")
+
+    dbPy.update_user_done(user_id_list)
+    logger.info(f"已更新 {len(user_id_list)} 个用户的处理状态")
+
+    return len(user_dict)
+
+
+def batch_clean_loop(batch_size: int = 20):
+    i = 1
+
+    while True:
+        start_time = time.time()
+        logger.info(f"开始第 {i} 批次清洗：")
+        valid_count = batch_clean(batch_size=batch_size)
+        end_time = time.time()
+        duration = end_time - start_time
+        logger.info(f"第 {i} 批次清洗完成，用时 {duration/60:.2f} 分钟，速度为 {duration/batch_size:.2f} 秒/用户，有效率为 {valid_count/batch_size:.2%}")
+        undone = dbPy.get_undone_user_count()
+        done = dbPy.get_done_user_count()
+        ratio = done / undone
+        logger.info(f"已完成清洗 {done} 个用户，剩余 {undone} 个用户，完成率为 {ratio:.2%}")
+        i += 1
+        time.sleep(10)
 
 
 if __name__ == "__main__":
-    batch_clean(batch_size=10)
+    batch_clean_loop()
+

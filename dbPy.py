@@ -160,15 +160,20 @@ def insert_weibos_cleaned(weibo_dicts):
     execute_many(sql, param_list)
 
 
+def get_undone_user_count():
+    query = "SELECT COUNT(*) FROM user WHERE to_be_cleaned = 0 AND done = 0;"
+    result = execute_query(query)
+    return result[0][0]
 
-
-
+def get_done_user_count():
+    query = "SELECT COUNT(*) FROM user_cleaned;"
+    result = execute_query(query)
+    return result[0][0]
 
 
 
 # 示例：仅用于测试
 if __name__ == "__main__":
-    users = get_users(where="id = 1006506982")
-    print(users)
-
+    print(get_undone_user_count())
+    print(get_done_user_count())
 
