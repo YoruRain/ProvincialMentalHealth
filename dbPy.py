@@ -2,7 +2,7 @@ import json
 import pymysql
 from datetime import datetime
 
-config_file = r"Provincial_Mental_Health_2\weibo_config.json"
+config_file = r"weibo_config.json"
 
 with open(config_file, "r", encoding="utf-8") as f:
     config = json.load(f)
@@ -168,8 +168,7 @@ def insert_weibos_cleaned(weibo_dicts):
 
 # 示例：仅用于测试
 if __name__ == "__main__":
-    # users = get_users(limit=5)
-    # print(users)
-    weibos = get_weibos(limit=5)
-    print(weibos)
+    users = get_users(where="id = 1006506982")
+    print(users)
+
 
