@@ -92,6 +92,15 @@ def update_user_done(user_id_list):
     print(f"已将 {len(user_id_list)} 个用户设置为已清洗")
 
 
+def update_user_to_be_cleaned(user_id_list):
+    """
+    更新user表的to_be_cleaned字段为1
+    """
+    sql = "UPDATE `user` SET `to_be_cleaned` = 1 WHERE `id` IN (%s)"
+    execute_many(sql, user_id_list)
+    print(f"已将 {len(user_id_list)} 个用户设置为待清洗")
+
+
 def get_weibos(fields=None, where=None, limit=None):
     """
     提取weibo表数据，返回字典列表
@@ -128,7 +137,7 @@ def get_weibos(fields=None, where=None, limit=None):
 
 def insert_users_cleaned(user_dicts):
     """
-    将清洗后的user数据写入user_cleaned表
+    将清洗后的user数据写入user_cleaned表，如果记录已存在则更新
 
     Args:
         user_dicts (list): 字典列表
@@ -136,7 +145,7 @@ def insert_users_cleaned(user_dicts):
     if not user_dicts:
         return
     fields = list(user_dicts[0].keys())
-    sql = f"INSERT INTO user_cleaned ({', '.join(fields)}) VALUES ({', '.join(['%s']*len(fields))})"
+    sql = f"REPLACE INTO user_cleaned ({', '.join(fields)}) VALUES ({', '.join(['%s']*len(fields))})"
     param_list = [tuple(user[field] for field in fields) for user in user_dicts]
     execute_many(sql, param_list)
 

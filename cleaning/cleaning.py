@@ -69,7 +69,9 @@ def is_valid(text: str) -> bool:
         '我在参与', '连续签到', '粉打卡', '年度歌曲', 
         '免费围观', '关注超话', "蚂蚁庄园：", "森林驿站", 
         "头条文章", "注册微博", "注册微博", "闲鱼发布",
-        "闲鱼号", "头像挂件", "试试手气"
+        "闲鱼号", "头像挂件", "试试手气", "个性皮肤", 
+        "进行中", "品牌代言", "粉丝头衔", "签到活动"
+        "微博渔场"
     ]
 
     # 微博中含有任意一个关键词，则认为无效
@@ -140,6 +142,7 @@ def get_user_dict(cleaned=True, limit=50) -> dict:
     
     user_dict = {}
     user_id_list = [user["uid"] for user in users]
+    logging.info(f"获取用户列表：{user_id_list}")
     weibo_list = dbPy.get_weibos(where=f"user_id in ({', '.join(user_id_list)})")
 
     id_ip_dict = get_id_ip_dict(file_path=r"collecting", file_name="user_id_ip.txt")
@@ -244,7 +247,7 @@ def validity_analysis(llm_config: dict, user_weibo) -> tuple:
         user_weibo (Any): 用户微博
 
     Returns:
-        tuple: (分析结果, 是否包含高风险内容)
+        str: 分析结果
     """
     base_url = llm_config["base_url"]
     model = llm_config["model"]
@@ -289,12 +292,13 @@ def validity_analysis(llm_config: dict, user_weibo) -> tuple:
                 temperature=1.0, 
                 stream=False
             )
-            return response.choices[0].message.content, False
+            return response.choices[0].message.content
         except Exception as e:
             error_str = str(e)
-            if "content_filter" in error_str and "high risk" in error_str:
+            if '400' in error_str:
                 logger.warning(f"检测到高风险内容，跳过该用户")
-                return None, True
+                logger.warning(f"错误信息：{error_str}")
+                return None
             
             retry_count += 1
             if retry_count >= max_retries:
@@ -340,12 +344,7 @@ def multi_model_validity_analysis(user_weibo_dict: dict) -> dict:
         # 使用三个不同的模型进行分析
         for model_config in models:
             try:
-                result, is_high_risk = validity_analysis(model_config, test_data)
-                if is_high_risk:
-                    # 将高风险用户ID写入文件
-                    write_file("./cleaning", "users_error.txt", user_id)
-                    logger.warning(f"用户 {user_id} 包含高风险内容，已记录并跳过")
-                    break  # 跳出模型循环，处理下一个用户
+                result = validity_analysis(model_config, test_data)
                 
                 # 确保结果是 "0" 或 "1"
                 if result and result.strip() in ['0', '1']:
@@ -358,9 +357,8 @@ def multi_model_validity_analysis(user_weibo_dict: dict) -> dict:
                 logger.error(f"分析用户 {user_id} 时发生错误: {str(e)}")
                 user_results.append(None)
         
-        if not is_high_risk:  # 只有在不是高风险内容的情况下才记录结果
-            all_results[user_id] = user_results
-            logger.info(f"用户 {user_id} 分析完成，分析结果：{user_results}")
+        all_results[user_id] = user_results
+        logger.info(f"用户 {user_id} 分析完成，分析结果：{user_results}")
         
         processed_users += 1
         logger.info(f"进度: {processed_users}/{total_users} 用户分析完成")
@@ -372,11 +370,13 @@ def multi_model_validity_analysis(user_weibo_dict: dict) -> dict:
 def classify_users(results: dict, threshold: int = 2) -> dict:
     users_to_remove = []
     users_to_examine = []
+    users_error = []
     # counter = {0:0, 1:0, 2:0, 3:0}
 
     for user_id, result in results.items():
         if None in result:
-            print(f"分类过程中 用户 {user_id} 出现错误，跳过")
+            logger.warning(f"分类过程中 用户 {user_id} 出现错误，跳过")
+            users_error.append(user_id)
             continue
         
         score = sum(result)
@@ -386,7 +386,7 @@ def classify_users(results: dict, threshold: int = 2) -> dict:
         elif threshold <= score < 3:
             users_to_examine.append(user_id)
 
-    return users_to_remove, users_to_examine
+    return users_to_remove, users_to_examine, users_error
 
 
 def insert_cleaned_users_weibos(user_dict: dict):
@@ -417,7 +417,7 @@ def batch_clean(batch_size: int = 10):
     results = multi_model_validity_analysis(sample_weibo_dict)
     logger.info("完成多模型有效性分析")
 
-    users_to_remove, users_to_examine = classify_users(results)
+    users_to_remove, users_to_examine, users_error = classify_users(results)
     logger.info(f"分类结果：需移除 {len(users_to_remove)} 个用户，需人工检查 {len(users_to_examine)} 个用户")
 
     for user_id in users_to_remove:
@@ -426,8 +426,14 @@ def batch_clean(batch_size: int = 10):
     for user_id in users_to_examine:
         del user_dict[user_id]
 
+    for user_id in users_error:
+        del user_dict[user_id]
+
     write_file("./cleaning", "users_to_examine.txt", users_to_examine)
     logger.info(f"已将 {len(users_to_examine)} 个需人工检查的用户ID写入文件")
+
+    write_file("./cleaning", "users_error.txt", users_error)
+    logger.info(f"已将 {len(users_error)} 个出现错误的用户ID写入文件")
 
     logger.info(f"清洗完成：最终有效用户数 {len(user_dict)}")
     insert_cleaned_users_weibos(user_dict)
@@ -451,7 +457,7 @@ def batch_clean_loop(batch_size: int = 20):
         logger.info(f"第 {i} 批次清洗完成，用时 {duration/60:.2f} 分钟，速度为 {duration/batch_size:.2f} 秒/用户，有效率为 {valid_count/batch_size:.2%}")
         undone = dbPy.get_undone_user_count()
         done = dbPy.get_done_user_count()
-        ratio = done / undone
+        ratio = done / (undone + done)
         logger.info(f"已完成清洗 {done} 个用户，剩余 {undone} 个用户，完成率为 {ratio:.2%}")
         i += 1
         time.sleep(10)
