@@ -174,10 +174,14 @@ def get_undone_user_count():
     result = execute_query(query)
     return result[0][0]
 
+
 def get_done_user_count():
     query = "SELECT COUNT(*) FROM user_cleaned;"
     result = execute_query(query)
     return result[0][0]
+
+
+
 
 
 
