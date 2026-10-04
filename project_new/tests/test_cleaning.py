@@ -8,11 +8,12 @@ import sys
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "cleaning"))
-from cleaning import classify_votes, run_cleaning  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "02_cleaning"))
+from cleaning import classify_votes, run_cleaning, vote_with_model  # noqa: E402
 from manual_examine import review_user, run_review  # noqa: E402
 from storage import export_jsonl, load_state, validate_export  # noqa: E402
 
@@ -79,10 +80,13 @@ class LocalCleaningTests(unittest.TestCase):
         self.assertEqual((second["users"], second["weibos"]), (1, 12))
         self.assertEqual(validate_export(self.data_root)["weibos"], 12)
         user_line = json.loads((self.data_root / "cleaning_output" / "user_cleaned.jsonl").read_text(encoding="utf-8"))
-        self.assertEqual(list(user_line), ["uid", "screen_name", "gender", "statuses_count", "IP", "done", "error"])
-        self.assertEqual((user_line["uid"], user_line["done"], user_line["error"]), ("101", 0, 0))
+        self.assertEqual(list(user_line), ["uid", "screen_name", "gender", "statuses_count", "IP"])
+        self.assertEqual(user_line["uid"], "101")
+        self.assertEqual(state["model_results"], [])
         with (self.data_root / "cleaning_output" / "weibo_cleaned.jsonl").open(encoding="utf-8") as stream:
-            self.assertEqual(sum(1 for _ in stream), 12)
+            posts = [json.loads(line) for line in stream]
+        self.assertEqual(len(posts), 12)
+        self.assertTrue(all("done" not in post for post in posts))
 
     def test_short_user_rejected_and_changed_source_preserved(self) -> None:
         path = self.write_crawl("202", count=8, ip_location="湖南（附加说明）")
@@ -99,10 +103,17 @@ class LocalCleaningTests(unittest.TestCase):
             {"base_url": "https://invalid.example", "model": f"model-{index}", "api_key": "test"}
             for index in range(3)
         ]}), encoding="utf-8")
-        with patch("cleaning.vote_with_model", side_effect=[1, 1, 1]) as vote:
+        results = [{"outcome": "vote", "vote": 1} for _ in range(3)]
+        with patch("cleaning.vote_with_model", side_effect=results) as vote:
             self.assertEqual(run_cleaning(self.data_root, self.config)["auto_accepted"], 1)
             self.assertEqual(vote.call_count, 3)
-        self.assertEqual(load_state(self.data_root, "303")["votes"], [1, 1, 1])
+            self.assertEqual(vote.call_args_list[0].args[3][0], "900000")
+        state = load_state(self.data_root, "303")
+        self.assertEqual(state["votes"], [1, 1, 1])
+        self.assertEqual(state["model_results"], results)
+        self.assertNotIn("done", state["user"])
+        self.assertNotIn("error", state["user"])
+        self.assertNotIn("done", state["weibos"][0])
         self.assertEqual(classify_votes([1, 1, 0]), "needs_review")
         self.assertEqual(classify_votes([1, 0, 0]), "rejected")
 
@@ -122,10 +133,92 @@ class LocalCleaningTests(unittest.TestCase):
             {"base_url": "https://invalid.example", "model": f"model-{index}", "api_key": "test"}
             for index in range(3)
         ]}), encoding="utf-8")
-        with patch("cleaning.vote_with_model", side_effect=RuntimeError("offline")):
+        with patch("cleaning.vote_with_model", return_value={"outcome": "error", "message": "offline"}):
             self.assertEqual(run_cleaning(self.data_root, self.config)["error"], 1)
-        with patch("cleaning.vote_with_model", side_effect=[1, 1, 0]):
+        with patch("cleaning.vote_with_model", side_effect=[
+            {"outcome": "vote", "vote": vote} for vote in (1, 1, 0)
+        ]):
             self.assertEqual(run_cleaning(self.data_root, self.config)["needs_review"], 1)
+
+    def test_content_filter_is_recorded_and_sent_to_manual_review(self) -> None:
+        self.write_crawl("502", ip_location="广东")
+        self.config.write_text(json.dumps({"models": [
+            {"base_url": "https://invalid.example", "model": f"model-{index}", "api_key": "test"}
+            for index in range(3)
+        ]}), encoding="utf-8")
+        results = [
+            {"outcome": "vote", "vote": 1},
+            {"outcome": "content_filter", "provider_code": "data_inspection_failed", "sample_wids": ["900000"]},
+            {"outcome": "vote", "vote": 1},
+        ]
+        calls = 0
+
+        def next_result(*args):
+            nonlocal calls
+            if calls:
+                saved = load_state(self.data_root, "502")
+                self.assertEqual(saved["status"], "processing")
+                self.assertEqual(len(saved["model_results"]), calls)
+            result = results[calls]
+            calls += 1
+            return result
+
+        with patch("cleaning.vote_with_model", side_effect=next_result):
+            self.assertEqual(run_cleaning(self.data_root, self.config)["needs_review"], 1)
+        state = load_state(self.data_root, "502")
+        self.assertEqual(state["reason"], "model_content_filter")
+        self.assertEqual(state["votes"], [1, 1])
+        self.assertEqual(state["model_results"], results)
+        self.assertEqual(run_cleaning(self.data_root, self.config)["skipped_existing"], 1)
+        self.assertEqual(export_jsonl(self.data_root)["users"], 0)
+        review_user(self.data_root, "502", "1")
+        self.assertEqual(load_state(self.data_root, "502")["model_results"], results)
+        self.assertEqual(export_jsonl(self.data_root)["users"], 1)
+
+    def test_provider_content_filter_signals_and_generic_400(self) -> None:
+        model = {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus", "api_key": "test"}
+        sample_wids = ["900000"]
+
+        class ProviderError(Exception):
+            status_code = 400
+            request_id = "request-1"
+
+            def __init__(self, code: str, message: str):
+                super().__init__(message)
+                self.response = SimpleNamespace(
+                    json=lambda: {"error": {"code": code, "message": message}},
+                    headers={"x-request-id": "request-1"},
+                )
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=None)))
+        fake_openai = SimpleNamespace(OpenAI=lambda **kwargs: client)
+        with patch.dict(sys.modules, {"openai": fake_openai}), patch("cleaning.time.sleep"):
+            client.chat.completions.create = lambda **kwargs: (_ for _ in ()).throw(
+                ProviderError("data_inspection_failed", "Input data may contain inappropriate content.")
+            )
+            blocked = vote_with_model(model, "502", ["正文"], sample_wids)
+            self.assertEqual((blocked["outcome"], blocked["attempts"], blocked["request_id"]),
+                             ("content_filter", 1, "request-1"))
+            client.chat.completions.create = lambda **kwargs: SimpleNamespace(
+                choices=[SimpleNamespace(finish_reason="content_filter")], _request_id="request-2"
+            )
+            deepseek = vote_with_model({**model, "base_url": "https://api.deepseek.com"}, "502", ["正文"], sample_wids)
+            self.assertEqual((deepseek["outcome"], deepseek["request_id"]), ("content_filter", "request-2"))
+            client.chat.completions.create = lambda **kwargs: (_ for _ in ()).throw(
+                ProviderError("content_filter", "The request was rejected because it was considered high risk")
+            )
+            kimi = vote_with_model({**model, "base_url": "https://api.moonshot.cn/v1"}, "502", ["正文"], sample_wids)
+            self.assertEqual((kimi["provider"], kimi["outcome"]), ("kimi", "content_filter"))
+            client.chat.completions.create = lambda **kwargs: (_ for _ in ()).throw(
+                ProviderError("invalid_request_error", "content_filter: The request was rejected because it was considered high risk")
+            )
+            kimi_message = vote_with_model({**model, "base_url": "https://api.moonshot.cn/v1"}, "502", ["正文"], sample_wids)
+            self.assertEqual(kimi_message["outcome"], "content_filter")
+            client.chat.completions.create = lambda **kwargs: (_ for _ in ()).throw(
+                ProviderError("invalid_request_error", "Bad parameter")
+            )
+            generic = vote_with_model(model, "502", ["正文"], sample_wids)
+            self.assertEqual((generic["outcome"], generic["attempts"]), ("error", 5))
 
     def test_manual_decision_is_saved_before_quit(self) -> None:
         for uid in ("601", "602"):

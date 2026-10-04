@@ -15,6 +15,7 @@ import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from storage import export_jsonl, load_ip_fallback, load_state, now_utc, save_state, validate_export
 
@@ -63,14 +64,22 @@ def normalize_region(ip_location: object, fallback: str | None = None) -> str:
     return region
 
 
-def sample_weibos(posts: list[dict], max_length: int = 200, max_count: int = 20) -> list[str]:
+def _sampled_posts(posts: list[dict], max_count: int) -> list[dict]:
     if not posts:
         return []
     step = max(1, len(posts) // max(1, max_count - 1))
+    return posts[::step][:max_count]
+
+
+def sample_weibos(posts: list[dict], max_length: int = 200, max_count: int = 20) -> list[str]:
     return [
         post["text"] if len(post["text"]) <= max_length else post["text"][:max_length] + "..."
-        for post in posts[::step][:max_count]
+        for post in _sampled_posts(posts, max_count)
     ]
+
+
+def sample_weibo_ids(posts: list[dict], max_count: int = 20) -> list[str]:
+    return [str(post["wid"]) for post in _sampled_posts(posts, max_count)]
 
 
 def _required(mapping: dict, key: str, source: Path):
@@ -106,8 +115,6 @@ def read_crawled_user(path: Path, fallback_regions: dict[str, str]) -> dict:
         "gender": str(_required(source_user, "gender", path)),
         "statuses_count": _integer(source_user, "statuses_count", path),
         "IP": normalize_region(source_user.get("ip_location"), fallback_regions.get(uid)),
-        "done": 0,
-        "error": 0,
     }
     posts = []
     seen_ids = set()
@@ -143,7 +150,6 @@ def read_crawled_user(path: Path, fallback_regions: dict[str, str]) -> dict:
             "attitudes_count": _integer(source_post, "attitudes_count", path),
             "comments_count": _integer(source_post, "comments_count", path),
             "reposts_count": _integer(source_post, "reposts_count", path),
-            "done": 0,
         })
     return {"uid": uid, "user": user, "weibos": posts, "skipped_nonoriginal": skipped_nonoriginal}
 
@@ -164,11 +170,58 @@ def load_models(config_path: Path) -> list[dict]:
     return models
 
 
-def vote_with_model(model: dict, uid: str, sample: list[str]) -> int:
+def _provider(base_url: str) -> str:
+    host = (urlparse(base_url).hostname or "").lower()
+    if "deepseek" in host:
+        return "deepseek"
+    if "dashscope" in host or "aliyuncs" in host:
+        return "qwen"
+    if "moonshot" in host or "kimi" in host:
+        return "kimi"
+    return "unknown"
+
+
+def _error_details(error: Exception) -> dict:
+    details = {
+        "http_status": getattr(error, "status_code", None),
+        "provider_code": getattr(error, "code", None),
+        "request_id": getattr(error, "request_id", None),
+        "message": str(error)[:500],
+    }
+    response = getattr(error, "response", None)
+    if response is not None:
+        details["http_status"] = details["http_status"] or getattr(response, "status_code", None)
+        try:
+            payload = response.json()
+        except (ValueError, AttributeError):
+            payload = None
+        if isinstance(payload, dict):
+            body = payload.get("error")
+            if isinstance(body, dict):
+                details["provider_code"] = body.get("code") or body.get("type") or details["provider_code"]
+                details["message"] = str(body.get("message") or details["message"])[:500]
+            details["request_id"] = payload.get("request_id") or details["request_id"]
+    if response is not None and not details["request_id"] and hasattr(response, "headers"):
+        details["request_id"] = response.headers.get("x-request-id")
+    return details
+
+
+def _is_content_filter(details: dict) -> bool:
+    code = str(details["provider_code"] or "").lower()
+    message = details["message"].lower()
+    return code in {"data_inspection_failed", "datainspectionfailed", "content_filter"} or (
+        "content_filter" in message and "high risk" in message
+    )
+
+
+def vote_with_model(model: dict, uid: str, sample: list[str], sample_wids: list[str]) -> dict:
     from openai import OpenAI  # Only required when models are configured.
 
-    client = OpenAI(api_key=model["api_key"], base_url=model["base_url"])
-    last_error = None
+    result = {
+        "provider": _provider(model["base_url"]), "model": model["model"],
+        "sample_wids": sample_wids, "occurred_at": now_utc(),
+    }
+    client = OpenAI(api_key=model["api_key"], base_url=model["base_url"], max_retries=0)
     for attempt in range(5):
         try:
             response = client.chat.completions.create(
@@ -180,15 +233,29 @@ def vote_with_model(model: dict, uid: str, sample: list[str]) -> int:
                 temperature=1.0,
                 stream=False,
             )
+            result.pop("provider_code", None)
+            result.pop("message", None)
+            result["attempts"] = attempt + 1
+            result["http_status"] = 200
+            result["request_id"] = getattr(response, "_request_id", None)
+            if response.choices[0].finish_reason == "content_filter":
+                result.update(outcome="content_filter", provider_code="content_filter")
+                return result
             answer = (response.choices[0].message.content or "").strip()
             if answer not in ("0", "1"):
                 raise ValueError(f"模型 {model['model']} 返回无效投票：{answer!r}")
-            return int(answer)
+            result.update(outcome="vote", vote=int(answer))
+            return result
         except Exception as error:
-            last_error = error
+            details = _error_details(error)
+            result.update(details, attempts=attempt + 1)
+            if _is_content_filter(details):
+                result["outcome"] = "content_filter"
+                return result
             if attempt < 4:
                 time.sleep(5)
-    raise RuntimeError(f"模型 {model['model']} 连续 5 次调用失败") from last_error
+    result["outcome"] = "error"
+    return result
 
 
 def classify_votes(votes: list[int]) -> str:
@@ -223,14 +290,14 @@ def run_cleaning(data_root: Path, config_path: Path, reprocess: bool = False) ->
         uid = path.parent.name
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         previous = load_state(data_root, uid)
-        if previous and previous.get("status") != "error" and not reprocess:
+        if previous and previous.get("status") not in ("error", "processing") and not reprocess:
             if previous.get("source_sha256") != digest:
                 LOGGER.warning("用户 %s 的源文件已变化；使用 --reprocess 才会覆盖现有状态", uid)
                 counts["source_changed"] += 1
             else:
                 counts["skipped_existing"] += 1
             continue
-        state = {"uid": uid, "source_sha256": digest, "updated_at": now_utc(), "votes": [], "reason": ""}
+        state = {"uid": uid, "source_sha256": digest, "updated_at": now_utc(), "votes": [], "model_results": [], "reason": ""}
         try:
             state.update(read_crawled_user(path, fallback_regions))
             if len(state["weibos"]) < 10:
@@ -241,9 +308,25 @@ def run_cleaning(data_root: Path, config_path: Path, reprocess: bool = False) ->
                 state["reason"] = "models_not_configured"
             else:
                 sample = sample_weibos(state["weibos"])
-                state["votes"] = [vote_with_model(model, uid, sample) for model in models]
-                state["status"] = classify_votes(state["votes"])
-                state["reason"] = "model_votes"
+                sample_wids = sample_weibo_ids(state["weibos"])
+                state["status"] = "processing"
+                for model in models:
+                    result = vote_with_model(model, uid, sample, sample_wids)
+                    state["model_results"].append(result)
+                    if result["outcome"] == "vote":
+                        state["votes"].append(result["vote"])
+                    state["updated_at"] = now_utc()
+                    save_state(data_root, state)
+                outcomes = {result["outcome"] for result in state["model_results"]}
+                if "content_filter" in outcomes:
+                    state["status"] = "needs_review"
+                    state["reason"] = "model_content_filter"
+                elif "error" in outcomes:
+                    state["status"] = "error"
+                    state["reason"] = "model_call_failed"
+                else:
+                    state["status"] = classify_votes(state["votes"])
+                    state["reason"] = "model_votes"
         except Exception as error:
             state["status"] = "error"
             state["reason"] = str(error)

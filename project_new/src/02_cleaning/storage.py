@@ -10,10 +10,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-USER_FIELDS = ("uid", "screen_name", "gender", "statuses_count", "IP", "done", "error")
+USER_FIELDS = ("uid", "screen_name", "gender", "statuses_count", "IP")
 WEIBO_FIELDS = (
     "wid", "uid", "text", "created_at", "attitudes_count",
-    "comments_count", "reposts_count", "done",
+    "comments_count", "reposts_count",
 )
 ACCEPTED_STATUSES = {"auto_accepted", "manual_accepted"}
 
@@ -95,7 +95,7 @@ def _digest(path: Path) -> str:
 
 def _check_fields(row: dict, expected: tuple[str, ...], source: str) -> None:
     if not isinstance(row, dict) or set(row) != set(expected):
-        raise ValueError(f"{source} 的输出字段与 CSV 格式不一致")
+        raise ValueError(f"{source} 的输出字段与清洗格式不一致")
 
 
 def export_jsonl(data_root: Path) -> dict:
