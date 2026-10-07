@@ -49,7 +49,7 @@ python project_new/src/02_cleaning/cleaning.py validate-export
 
 ## 数据格式
 
-以下描述当前代码运行后生成的格式。`cleaning_state/<uid>.json` 是每位用户一份完整 JSON；两份 `*_cleaned.jsonl` 是每行一个 JSON 对象。微博 ID 和用户 ID 均保存为字符串，计数字段在新生成的数据中为整数。当前 `project_new/data/cleaning_output/` 中从历史数据迁移的 JSONL 可能将计数保存为字符串，且未必有 `manifest.json`；不要把它们当作执行本程序 `export` 后的示例。
+以下描述当前代码运行后生成的格式。`cleaning_state/<uid>.json` 是每位用户一份完整 JSON；两份 `*_cleaned.jsonl` 是每行一个 JSON 对象。微博 ID 和用户 ID 均保存为字符串，计数字段在新生成的数据中为整数。历史 JSONL 已单独放在 `project_new/data/datasets/legacy/`，其计数字段可能是字符串，也没有由本程序生成的 `manifest.json`；`cleaning_output/` 留给本程序导出新数据。
 
 ### `project_new/data/cleaning_state/<uid>.json`
 
