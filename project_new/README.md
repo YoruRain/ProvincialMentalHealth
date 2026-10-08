@@ -1,100 +1,53 @@
-# 微博情绪分析：整理版流程
+# 微博情绪分析项目
 
-`project_new` 将早期项目中的数据清洗、微博情绪分析和结果分析整理为本地文件流程。代码按阶段放在 `src/`，已有的历史数据放在 `data/datasets/legacy/`。仓库根目录中的旧版代码仍是独立实现；本目录的脚本以 JSON/JSONL 文件衔接，不依赖旧版数据库。
-
-## 目录与数据流
+`project_new` 将早期项目整理为基于本地文件的分析流程：从爬取的微博中筛选生活分享账号，对保留的微博进行大模型情感分析，再将结果组织为逐条微博的数据表和逐位用户的情绪动力学画像。各阶段的输入、状态和结果分别保存；仓库根目录中的旧版实现仍独立存在。
 
 ```text
-project_new/
-├── config/                         # 清洗模型配置、LLM 配置示例
-├── requirements.txt                # 当前代码的直接 Python 依赖
-├── data/
-│   ├── crawler_results/<uid>/<uid>.json  # 新清洗流程的爬虫输入
-│   ├── cleaning_state/<uid>.json          # 每位用户的清洗及人工复核状态
-│   ├── cleaning_output/                  # 新清洗导出的 JSONL 与 manifest.json
-│   ├── datasets/legacy/                  # 历史清洗数据、历史 LLM 汇总和采集资料
-│   └── llm_analysis/                    # LLM 实验及后续分析产物
-├── src/
-│   ├── 01_cleaning/                # 规则清洗、模型投票、人工复核、导出
-│   ├── 02_llm_analysis/            # 分批情绪分析、断点续跑、结果汇总
-│   └── 03_result_analysis/
-│       ├── 03_1_data_analysis_table/     # 用户、微博、模型结果关联成表
-│       └── 03_2_emotion_dynamics_profile/ # 用户情绪动力学画像与筛选审计
-└── tests/                          # 各阶段的本地单元测试
+爬虫 JSON → 清洗与人工复核 → 用户/微博 JSONL → 大模型分批分析与汇总
+                                              → 逐条微博分析表 → 用户画像与筛选审计
 ```
 
-主要流程为：爬虫 JSON → 清洗状态与人工复核 → 两份清洗后 JSONL → LLM 分批结果 → `llm_analysis.json` → `analysis_table.parquet` → 画像表和筛选审计表。也可以从 `data/datasets/legacy/` 中已有的清洗 JSONL 与历史 `llm_analysis.json` 开始做结果分析，无须重新清洗或调用模型。历史数据是已有资料，不等同于本目录新流程的一次运行产物。
+项目也保留了历史清洗数据和历史大模型结果，可直接作为结果分析阶段的输入。历史资料与新流程生成的实验结果分开存放，不能将历史结果视为本次代码重新运行的产物。
 
-`data/` 下的 JSON、JSONL、CSV、TXT、Parquet，以及 `config/` 下的本地 JSON 配置均被 `.gitignore` 忽略。克隆仓库后不能仅凭代码假定这些输入和结果已存在；请单独保存数据与本地配置。当前 `crawler_results/` 没有爬虫输入，运行新清洗流程前需按上述目录约定提供数据。
+## 01 · 数据清洗与账号筛选
 
-## 运行环境
+[清洗阶段](src/01_cleaning/README.md)读取每位用户的爬虫 JSON，先核对用户、微博 ID 和必要字段，再跳过转发及归属不符的微博；对保留的原创微博清理分享尾注和低价值文本，排除广告等内容，并将 IP 属地规范为省份字段。有效微博少于 10 条的用户直接被拒绝。
 
-以下命令从**仓库根目录**执行，使用 Python 3.10 或更新版本。安装本目录代码直接使用的第三方包：
+对满足基本条件的用户，清洗阶段用微博样本判断账号是否主要分享个人生活。配置三个模型时，三个同意票自动保留、两个同意票进入人工复核，其余拒绝；未配置模型时，符合规则的用户也进入人工复核。模型内容审核拦截会单独记录并交由人工复核，不会当作反对票。人工决定与各模型的结果保存在逐用户状态中，便于追溯和继续处理。
 
-```powershell
-python -m pip install -r project_new/requirements.txt
-```
+只有自动或人工确认保留的用户会进入清洗后数据集：一份用户 JSONL、一份微博 JSONL，以及记录行数和文件摘要的清单。清洗状态和下游数据集分开保存，下游分析不会改写原始爬虫数据或清洗结果。
 
-`requirements.txt` 固定了当前本地测试环境中的 `openai`、`numpy`、`pandas` 和 `pyarrow` 版本；它不是包含所有间接依赖的完整环境快照。纯本地清洗、数据检查和 LLM 结果汇总主要使用标准库；配置模型并调用接口时需要 `openai`。建分析表需要 `pyarrow`，画像步骤需要 `pandas`、`numpy` 和 `pyarrow`。
+## 02 · 大模型情感分析
 
-## 路径一：使用历史数据分析结果
+[分析阶段](src/02_llm_analysis/README.md)以清洗后的用户和微博 JSONL 为输入，当前实现使用 DeepSeek 模型，按用户将微博按时间排序，每批最多分析 20 条。提示词要求模型为每条微博给出综合情感类别与强度、事件概述、事件类型和关键词，并可给出方面级情感及跨微博关联。这里的跨微博关联来自单次请求中的微博批次，不代表对该用户全部历史微博进行一次整体分析。
 
-已有 `data/datasets/legacy/user_cleaned.jsonl`、`weibo_cleaned.jsonl` 与 `llm_analysis.json` 时，可直接建表和画像；这一路径不调用 LLM：
+这一阶段将模型返回的微博 ID 与请求批次逐一核对，并检查关键字段格式。每次实验记录输入摘要、模型、提示词和批次配置；分批结果与处理状态单独保存，以支持中断后续跑。模型内容审核拒绝时，程序逐步拆小批次，只将最终仍被拒绝的单条微博标为排除项；接口错误或无效响应则保留待重试状态。内容审核排除与情感判断是不同概念。
 
-```powershell
-python project_new/src/03_result_analysis/03_1_data_analysis_table/build_table.py
-python project_new/src/03_result_analysis/03_2_emotion_dynamics_profile/build_profiles.py
-```
+[结果汇总](src/02_llm_analysis/AGGREGATE.md)仅在整次实验的批次都得到成功结果或明确排除后，才将分散的结果整理为按用户、微博 ID 索引的 `llm_analysis.json`。汇总会核对输入和结果文件，避免把部分试运行或不同实验的数据混在一起。
 
-建表默认输出 `data/llm_analysis/analysis_table.parquet`，保留没有分析结果的微博，并统计缺失数量。画像默认输出 `emotion_dynamics_profile_v1.parquet`（入选用户）和 `emotion_dynamics_selection_v1.parquet`（全部用户的筛选审计）。默认入选条件包括每条微博有可用分数、至少 20 条微博、跨度至少 30 天且至少 10 个活跃日期。建表参数 `--input-dir`、`--analysis`、`--output` 和画像参数 `--input`、`--profile-output`、`--audit-output` 可改路径。字段、缺失值和筛选规则分别见[分析表说明](src/03_result_analysis/03_1_data_analysis_table/README.md)与[画像说明](src/03_result_analysis/03_2_emotion_dynamics_profile/README.md)。
+## 03 · 结果分析
 
-## 路径二：从爬虫结果重新处理
+### 逐条微博分析表
 
-### 1. 清洗与人工复核
+[分析表阶段](src/03_result_analysis/03_1_data_analysis_table/README.md)按用户和微博 ID 关联清洗数据与大模型结果，生成一条微博一行的 Parquet 表。它保留用户省份、性别、发布时间、互动计数，以及原始情感类别、强度和事件描述。对积极、消极、中立情感分别赋予 `1`、`-1`、`0` 的方向值，再与强度相乘得到 `signed_score`；无法映射的情感或缺失分析保持为空。
 
-爬虫输入应为 `data/crawler_results/<uid>/<uid>.json`：顶层有 `user` 对象和 `weibo` 列表，用户 ID 与目录名一致。每个用户目录只能有一个 JSON 文件。先按需配置 `config/cleaning_models.json`；未配置模型时，规则清洗后符合条件的用户进入人工复核队列。然后执行：
+建表还按用户的发帖时间顺序计算相邻微博之间的时间间隔、前一条分数和分数变化。没有大模型分析结果的微博仍保留，并由 `has_llm_analysis` 标记，方便查看覆盖情况及后续筛选造成的样本损失。
 
-```powershell
-python project_new/src/01_cleaning/cleaning.py run
-python project_new/src/01_cleaning/manual_examine.py
-python project_new/src/01_cleaning/cleaning.py export
-python project_new/src/01_cleaning/cleaning.py validate-export
-```
+### 用户情绪动力学画像
 
-`run` 按用户保存状态；`manual_examine.py` 交互式决定保留或拒绝；`export` 从已接受状态重建 `data/cleaning_output/user_cleaned.jsonl`、`weibo_cleaned.jsonl` 和 `manifest.json`。输入变化不会自动覆盖已有决定；`run --reprocess` 会重新判断该用户并覆盖其人工决定，使用前请核对影响。清洗规则、模型配置、状态字段与导出格式见[清洗说明](src/01_cleaning/README.md)。
+[画像阶段](src/03_result_analysis/03_2_emotion_dynamics_profile/README.md)从逐条微博分析表提取用户层面的动态特征。第一版画像只纳入每条微博都有可用分数、至少发布 20 条微博、首末发帖相隔至少 30 天且覆盖至少 10 个活跃日期的用户；所有用户的入选情况和排除原因另存为审计表。
 
-### 2. 检查输入并运行 LLM 实验
+画像包括情感分数均值与波动、相邻分数变化的均方根、消极/中立/积极三种状态之间的转移概率、状态保持率，以及发帖跨度和间隔。这些指标描述的是**微博表达出的情绪变化**；相邻转移按发帖顺序计算，解释时仍需结合不规则的发帖间隔。本版不估计恢复时间，也不把模型分析结果当作临床诊断。
 
-`analysis.py` 默认读取历史清洗数据。若使用上一步的新导出，`inspect` 和 `run` **都要**指定同一个 `--input-dir`：
+## 代码、数据与文档入口
 
-```powershell
-python project_new/src/02_llm_analysis/analysis.py inspect --input-dir project_new/data/cleaning_output
-```
+| 位置 | 内容 |
+| --- | --- |
+| `src/01_cleaning/` | 清洗、模型投票、人工复核及导出；[运行与数据格式](src/01_cleaning/README.md) |
+| `src/02_llm_analysis/` | 分批分析与续跑；[运行说明](src/02_llm_analysis/README.md)、[汇总说明](src/02_llm_analysis/AGGREGATE.md) |
+| `src/03_result_analysis/` | [逐条微博分析表](src/03_result_analysis/03_1_data_analysis_table/README.md)与[用户画像](src/03_result_analysis/03_2_emotion_dynamics_profile/README.md) |
+| `data/datasets/legacy/` | 从早期项目保留的清洗数据、模型结果和采集资料 |
+| `data/crawler_results/`、`data/cleaning_output/`、`data/llm_analysis/` | 新流程的输入、清洗导出和实验/分析产物 |
+| `config/`、`tests/`、[requirements.txt](requirements.txt) | 本地模型配置、阶段测试和 Python 直接依赖 |
 
-参照 `config/llm_analysis.json.example` 创建本地 `config/llm_analysis.json`，设置配置中 `api_key_env` 指向的环境变量（示例为 `DEEPSEEK_API_KEY`）。确认数据与调用成本后，先用少量用户进行真实接口试运行：
-
-```powershell
-python project_new/src/02_llm_analysis/analysis.py run --input-dir project_new/data/cleaning_output --run-id trial-01 --config project_new/config/llm_analysis.json --max-users 2
-```
-
-确认试运行结果后，去掉 `--max-users` 并保留相同的 `--run-id` 续跑。每次实验的 `run.json`、`state.jsonl` 和 `results/<uid>/<批次>.json` 保存在 `data/llm_analysis/<run-id>/`；输入摘要、模型、提示词等实验身份变化时须使用新的 run ID。输入 JSONL 只读。接口内容审核拒绝会拆分批次，最终可能排除个别微博；失败批次可在续跑时重试。详细行为见[LLM 分析说明](src/02_llm_analysis/README.md)。
-
-### 3. 汇总并生成结果表
-
-实验覆盖所有目标用户、且没有待重试批次后，才能汇总。仅执行 `--max-users` 的部分试验不能汇总为完整结果：
-
-```powershell
-python project_new/src/02_llm_analysis/aggregate.py --run-dir project_new/data/llm_analysis/trial-01
-python project_new/src/03_result_analysis/03_1_data_analysis_table/build_table.py --input-dir project_new/data/cleaning_output --analysis project_new/data/llm_analysis/trial-01/llm_analysis.json
-python project_new/src/03_result_analysis/03_2_emotion_dynamics_profile/build_profiles.py
-```
-
-汇总会验证实验记录、输入与结果，默认将 `llm_analysis.json` 写入该实验目录。建表时必须使用该实验对应的清洗输入；画像脚本默认读取上一步生成的 `analysis_table.parquet`。内容审核排除的微博没有模型结果，仍会出现在分析表中；画像筛选会记录因分数缺失而未入选的用户。详见[汇总说明](src/02_llm_analysis/AGGREGATE.md)。
-
-## 验证与使用边界
-
-```powershell
-python -m unittest discover -s project_new/tests -v
-```
-
-测试覆盖本地清洗、分批分析与汇总、建表和画像的关键逻辑。单元测试使用构造数据或模拟响应；通过测试不代表已完成真实模型调用，也不代表已对全部历史数据重新运行。清洗状态和 LLM 实验目录应与其对应输入一起保存；历史 JSONL、旧版 Notebook 和新实验结果之间没有自动同步。
+具体命令、参数、输出字段和异常处理请查看相应阶段的说明。`data/` 中的数据文件与 `config/` 中的本地 JSON 配置不随 Git 提交，需要单独保管；单元测试使用构造数据或模拟响应，不能替代真实模型调用与完整数据运行。
