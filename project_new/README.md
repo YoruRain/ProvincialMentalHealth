@@ -7,6 +7,7 @@
 ```text
 project_new/
 ├── config/                         # 清洗模型配置、LLM 配置示例
+├── requirements.txt                # 当前代码的直接 Python 依赖
 ├── data/
 │   ├── crawler_results/<uid>/<uid>.json  # 新清洗流程的爬虫输入
 │   ├── cleaning_state/<uid>.json          # 每位用户的清洗及人工复核状态
@@ -28,7 +29,13 @@ project_new/
 
 ## 运行环境
 
-以下命令从**仓库根目录**执行，使用 Python 3.10 或更新版本。纯本地清洗、数据检查和 LLM 结果汇总主要使用标准库；配置模型并调用接口时需要 `openai`。建分析表需要 `pyarrow`，画像步骤需要 `pandas`、`numpy` 和 `pyarrow`。本目录目前没有统一的依赖锁定文件，请在已有研究环境中准备相应包，并保留所用版本记录。
+以下命令从**仓库根目录**执行，使用 Python 3.10 或更新版本。安装本目录代码直接使用的第三方包：
+
+```powershell
+python -m pip install -r project_new/requirements.txt
+```
+
+`requirements.txt` 固定了当前本地测试环境中的 `openai`、`numpy`、`pandas` 和 `pyarrow` 版本；它不是包含所有间接依赖的完整环境快照。纯本地清洗、数据检查和 LLM 结果汇总主要使用标准库；配置模型并调用接口时需要 `openai`。建分析表需要 `pyarrow`，画像步骤需要 `pandas`、`numpy` 和 `pyarrow`。
 
 ## 路径一：使用历史数据分析结果
 
