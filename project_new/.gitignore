@@ -3,3 +3,4 @@
 /data/**/*.jsonl
 /data/**/*.csv
 /data/**/*.txt
+/data/**/*.parquet
