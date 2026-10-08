@@ -68,23 +68,6 @@ def iter_states(data_root: Path):
             yield state
 
 
-def load_ip_fallback(data_root: Path) -> dict[str, str]:
-    path = data_root / "collecting" / "user_id_ip_final.txt"
-    if not path.exists():
-        return {}
-    regions = {}
-    with path.open(encoding="utf-8") as stream:
-        for line_number, raw_line in enumerate(stream, 1):
-            parts = raw_line.strip().split(",")
-            if len(parts) != 2 or not all(parts):
-                raise ValueError(f"属地文件格式错误：{path}:{line_number}")
-            uid, region = parts
-            if uid in regions and regions[uid] != region:
-                raise ValueError(f"用户 {uid} 在属地文件中有多个不同属地")
-            regions[uid] = region
-    return regions
-
-
 def _digest(path: Path) -> str:
     sha = hashlib.sha256()
     with path.open("rb") as stream:

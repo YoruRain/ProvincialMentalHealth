@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "04_result_analysis" / "04_2_emotion_dynamics_profile"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "03_result_analysis" / "03_2_emotion_dynamics_profile"))
 from build_profiles import build_profiles  # noqa: E402
 
 

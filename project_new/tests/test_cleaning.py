@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "02_cleaning"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "01_cleaning"))
 from cleaning import classify_votes, run_cleaning, vote_with_model  # noqa: E402
 from manual_examine import review_user, run_review  # noqa: E402
 from storage import export_jsonl, load_state, validate_export  # noqa: E402
@@ -60,15 +60,12 @@ class LocalCleaningTests(unittest.TestCase):
         path.write_text(json.dumps(make_crawl(uid, count, ip_location), ensure_ascii=False), encoding="utf-8")
         return path
 
-    def test_fallback_manual_review_and_repeatable_export(self) -> None:
+    def test_missing_ip_manual_review_and_repeatable_export(self) -> None:
         self.write_crawl("101")
-        fallback = self.data_root / "collecting" / "user_id_ip_final.txt"
-        fallback.parent.mkdir(parents=True)
-        fallback.write_text("101,江苏\n", encoding="utf-8")
 
         self.assertEqual(run_cleaning(self.data_root, self.config)["needs_review"], 1)
         state = load_state(self.data_root, "101")
-        self.assertEqual(state["user"]["IP"], "江苏")
+        self.assertEqual(state["user"]["IP"], "")
         self.assertEqual(len(state["weibos"]), 12)
         self.assertEqual(run_cleaning(self.data_root, self.config)["skipped_existing"], 1)
 
@@ -82,6 +79,7 @@ class LocalCleaningTests(unittest.TestCase):
         user_line = json.loads((self.data_root / "cleaning_output" / "user_cleaned.jsonl").read_text(encoding="utf-8"))
         self.assertEqual(list(user_line), ["uid", "screen_name", "gender", "statuses_count", "IP"])
         self.assertEqual(user_line["uid"], "101")
+        self.assertEqual(user_line["IP"], "")
         self.assertEqual(state["model_results"], [])
         with (self.data_root / "cleaning_output" / "weibo_cleaned.jsonl").open(encoding="utf-8") as stream:
             posts = [json.loads(line) for line in stream]
@@ -96,6 +94,15 @@ class LocalCleaningTests(unittest.TestCase):
         self.assertEqual(run_cleaning(self.data_root, self.config)["source_changed"], 1)
         self.assertEqual(load_state(self.data_root, "202")["status"], "rejected")
         self.assertEqual(run_cleaning(self.data_root, self.config, reprocess=True)["needs_review"], 1)
+
+    def test_absent_ip_location_is_empty(self) -> None:
+        path = self.write_crawl("203")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["user"]["ip_location"]
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        self.assertEqual(run_cleaning(self.data_root, self.config)["needs_review"], 1)
+        self.assertEqual(load_state(self.data_root, "203")["user"]["IP"], "")
 
     def test_three_model_vote_can_accept_without_real_api(self) -> None:
         self.write_crawl("303", ip_location="浙江（说明）")

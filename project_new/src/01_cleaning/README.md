@@ -7,10 +7,10 @@
 从仓库根目录执行：
 
 ```powershell
-python project_new/src/02_cleaning/cleaning.py run
-python project_new/src/02_cleaning/manual_examine.py
-python project_new/src/02_cleaning/cleaning.py export
-python project_new/src/02_cleaning/cleaning.py validate-export
+python project_new/src/01_cleaning/cleaning.py run
+python project_new/src/01_cleaning/manual_examine.py
+python project_new/src/01_cleaning/cleaning.py export
+python project_new/src/01_cleaning/cleaning.py validate-export
 ```
 
 `run` 每处理一位用户就写入 `project_new/data/cleaning_state/<uid>.json`。再次运行会跳过源文件未变化且已有结果的用户；源文件变化时需显式传入 `run --reprocess`，这会重新判断并覆盖该用户原有的人工决定。`manual_examine.py` 支持 `--uid <用户ID>`，每输入一次 `1` 或 `0` 就立即保存；`s` 跳过，`q` 退出。需要改用其他测试数据时，两个脚本都支持在命令前传入 `--data-root <目录>`。
@@ -43,7 +43,7 @@ python project_new/src/02_cleaning/cleaning.py validate-export
 
 每个爬取目录恰有一个 JSON 文件，顶层包含 `user` 对象和 `weibo` 列表，`user.id` 应等于目录名。微博中含 `retweet` 或 `user_id` 与目录不符时跳过并计数；新爬虫应避免产生这类记录。微博去除低价值文本后少于 10 条的用户被拒绝。
 
-`user.ip_location` 取括号前的省份；缺失时从 `project_new/data/collecting/user_id_ip_final.txt` 按 ID 查找。两处都缺失会把用户标为 `error`，后续 `run` 可重试。逐用户状态文件保存源 JSON 的 SHA-256 摘要、清洗结果、模型投票、逐模型调用结果及人工决定；源文件变化不会静默覆盖既有状态。人工复核后仍保留 `model_results`。模型调用进行中会逐模型保存状态；若意外中断，下次 `run` 会重新处理该用户。
+`user.ip_location` 取括号前的省份；字段缺失、为空、`未知` 或 `暂无` 时，清洗结果中的 `IP` 置为空字符串。已有清洗状态不会自动更新 IP；如需按新规则重新清洗，使用 `run --reprocess`，这会重新判断并覆盖该用户原有的人工决定。逐用户状态文件保存源 JSON 的 SHA-256 摘要、清洗结果、模型投票、逐模型调用结果及人工决定；源文件变化不会静默覆盖既有状态。人工复核后仍保留 `model_results`。模型调用进行中会逐模型保存状态；若意外中断，下次 `run` 会重新处理该用户。
 
 仅安排一个清洗或人工复核写进程；不要在导出过程中启动下游读取程序。逐用户状态文件是可恢复的记录，JSONL 是供下游读取的汇总结果。
 
@@ -124,7 +124,7 @@ python project_new/src/02_cleaning/cleaning.py validate-export
 {"uid":"789012","screen_name":"另一位示例用户","gender":"f","statuses_count":12,"IP":"江苏"}
 ```
 
-`uid`、`screen_name`、`gender`、`IP` 为字符串；`statuses_count` 为整数。`IP` 是处理后的省份。这里不包含 `done`、`error` 或清洗状态；每位用户在一次导出中至多出现一行。
+`uid`、`screen_name`、`gender`、`IP` 为字符串；`statuses_count` 为整数。`IP` 是处理后的省份，源 IP 属地缺失时为空字符串。这里不包含 `done`、`error` 或清洗状态；每位用户在一次导出中至多出现一行。
 
 ### `project_new/data/cleaning_output/weibo_cleaned.jsonl`
 

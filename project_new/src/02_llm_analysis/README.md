@@ -7,13 +7,13 @@
 从仓库根目录先检查输入，不调用模型：
 
 ```powershell
-python project_new/src/03_llm_analysis/analysis.py inspect
+python project_new/src/02_llm_analysis/analysis.py inspect
 ```
 
 参考 `project_new/config/llm_analysis.json.example` 创建本地 `project_new/config/llm_analysis.json`，在环境变量 `DEEPSEEK_API_KEY` 中设置密钥。真实调用需要安装现有代码使用的 `openai` Python 包。先用少量用户试运行：
 
 ```powershell
-python project_new/src/03_llm_analysis/analysis.py run --run-id trial-01 --config project_new/config/llm_analysis.json --max-users 2
+python project_new/src/02_llm_analysis/analysis.py run --run-id trial-01 --config project_new/config/llm_analysis.json --max-users 2
 ```
 
 确认结果后，去掉 `--max-users` 并使用**相同的** `--run-id` 续跑。每次 `run` 会扫描、校验输入文件并计算摘要；如果有 `manifest.json`，还会核对清洗导出的摘要。实验目录位于 `project_new/data/llm_analysis/<run-id>/`，包含：

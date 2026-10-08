@@ -12,7 +12,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "04_result_analysis" / "04_1_data_analysis_table"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "03_result_analysis" / "03_1_data_analysis_table"))
 from build_table import build_table  # noqa: E402
 
 

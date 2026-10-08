@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from storage import export_jsonl, load_ip_fallback, load_state, now_utc, save_state, validate_export
+from storage import export_jsonl, load_state, now_utc, save_state, validate_export
 
 
 LOGGER = logging.getLogger("cleaning")
@@ -53,15 +53,11 @@ def is_valid(text: str) -> bool:
     return len(text.strip()) > 1 and not any(keyword in text for keyword in AD_KEYWORDS)
 
 
-def normalize_region(ip_location: object, fallback: str | None = None) -> str:
+def normalize_region(ip_location: object) -> str:
     raw = ip_location.strip() if isinstance(ip_location, str) else ""
     raw = re.sub(r"^IP属地\s*[:：]\s*", "", raw)
     region = re.split(r"[（(]", raw, maxsplit=1)[0].strip()
-    if region in ("", "未知", "暂无"):
-        region = fallback or ""
-    if not region:
-        raise ValueError("用户缺少 IP 属地，且采集阶段的 ID-属地文件没有回退记录")
-    return region
+    return "" if region in ("", "未知", "暂无") else region
 
 
 def _sampled_posts(posts: list[dict], max_count: int) -> list[dict]:
@@ -98,7 +94,7 @@ def _integer(mapping: dict, key: str, source: Path) -> int:
         raise ValueError(f"{source} 的 {key} 不是整数") from error
 
 
-def read_crawled_user(path: Path, fallback_regions: dict[str, str]) -> dict:
+def read_crawled_user(path: Path) -> dict:
     uid = path.parent.name
     if not uid.isdecimal():
         raise ValueError(f"目录名不是用户 ID：{path.parent}")
@@ -114,7 +110,7 @@ def read_crawled_user(path: Path, fallback_regions: dict[str, str]) -> dict:
         "screen_name": str(_required(source_user, "screen_name", path)),
         "gender": str(_required(source_user, "gender", path)),
         "statuses_count": _integer(source_user, "statuses_count", path),
-        "IP": normalize_region(source_user.get("ip_location"), fallback_regions.get(uid)),
+        "IP": normalize_region(source_user.get("ip_location")),
     }
     posts = []
     seen_ids = set()
@@ -284,7 +280,6 @@ def _input_files(data_root: Path):
 
 def run_cleaning(data_root: Path, config_path: Path, reprocess: bool = False) -> Counter:
     models = load_models(config_path)
-    fallback_regions = load_ip_fallback(data_root)
     counts: Counter = Counter()
     for path in _input_files(data_root):
         uid = path.parent.name
@@ -299,7 +294,7 @@ def run_cleaning(data_root: Path, config_path: Path, reprocess: bool = False) ->
             continue
         state = {"uid": uid, "source_sha256": digest, "updated_at": now_utc(), "votes": [], "model_results": [], "reason": ""}
         try:
-            state.update(read_crawled_user(path, fallback_regions))
+            state.update(read_crawled_user(path))
             if len(state["weibos"]) < 10:
                 state["status"] = "rejected"
                 state["reason"] = "too_few_valid_weibos"

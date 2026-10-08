@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "03_llm_analysis"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "02_llm_analysis"))
 from analysis import ContentRejected, run_analysis, scan_dataset  # noqa: E402
 
 

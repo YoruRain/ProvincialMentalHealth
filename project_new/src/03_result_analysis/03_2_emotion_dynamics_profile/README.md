@@ -3,7 +3,7 @@
 读取 `data/llm_analysis/analysis_table.parquet`，生成每位入选用户一行的 `emotion_dynamics_profile_v1.parquet`，以及每位原始用户一行的 `emotion_dynamics_selection_v1.parquet`。输出均位于 `project_new/data/llm_analysis/`，不会修改分析数据表。运行环境使用项目已有的 `pandas`、`numpy` 和 `pyarrow`。
 
 ```powershell
-python project_new/src/04_result_analysis/04_2_emotion_dynamics_profile/build_profiles.py
+python project_new/src/03_result_analysis/03_2_emotion_dynamics_profile/build_profiles.py
 ```
 
 可以用 `--input`、`--profile-output`、`--audit-output` 指定路径；`--min-posts`、`--min-span-days` 和 `--min-active-days` 可用于敏感性分析。
