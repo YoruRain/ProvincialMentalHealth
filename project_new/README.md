@@ -23,7 +23,7 @@
 
 这一阶段将模型返回的微博 ID 与请求批次逐一核对，并检查关键字段格式。每次实验记录输入摘要、模型、提示词和批次配置；分批结果与处理状态单独保存，以支持中断后续跑。模型内容审核拒绝时，程序逐步拆小批次，只将最终仍被拒绝的单条微博标为排除项；接口错误或无效响应则保留待重试状态。内容审核排除与情感判断是不同概念。
 
-[结果汇总](src/02_llm_analysis/AGGREGATE.md)仅在整次实验的批次都得到成功结果或明确排除后，才将分散的结果整理为按用户、微博 ID 索引的 `llm_analysis.json`。汇总会核对输入和结果文件，避免把部分试运行或不同实验的数据混在一起。
+[结果汇总](src/02_llm_analysis/README.md#汇总实验结果)仅在整次实验的批次都得到成功结果或明确排除后，才将分散的结果整理为按用户、微博 ID 索引的 `llm_analysis.json`。汇总会核对输入和结果文件，避免把部分试运行或不同实验的数据混在一起。
 
 ## 03 · 结果分析
 
@@ -44,7 +44,7 @@
 | 位置 | 内容 |
 | --- | --- |
 | `src/01_cleaning/` | 清洗、模型投票、人工复核及导出；[运行与数据格式](src/01_cleaning/README.md) |
-| `src/02_llm_analysis/` | 分批分析与续跑；[运行说明](src/02_llm_analysis/README.md)、[汇总说明](src/02_llm_analysis/AGGREGATE.md) |
+| `src/02_llm_analysis/` | 分批分析、续跑与[结果汇总](src/02_llm_analysis/README.md) |
 | `src/03_result_analysis/` | [逐条微博分析表](src/03_result_analysis/03_1_data_analysis_table/README.md)与[用户画像](src/03_result_analysis/03_2_emotion_dynamics_profile/README.md) |
 | `data/datasets/legacy/` | 从早期项目保留的清洗数据、模型结果和采集资料 |
 | `data/crawler_results/`、`data/cleaning_output/`、`data/llm_analysis/` | 新流程的输入、清洗导出和实验/分析产物 |
