@@ -1,12 +1,20 @@
 # 统一分析数据表
 
-从 `project_new/data/datasets/legacy/` 的两份清洗后 JSONL 和 `llm_analysis.json` 生成一行一条微博的 Parquet 表。默认输出为 `project_new/data/llm_analysis/analysis_table.parquet`，不会修改输入文件。运行环境需要 `pyarrow`。
+从 `data/datasets/legacy/` 的两份清洗后 JSONL 和 `llm_analysis.json` 生成一行一条微博的 Parquet 表。
+
+默认输出为 `data/llm_analysis/analysis_table.parquet`，不会修改输入文件。运行环境需要 `pyarrow`。
+
+从 `project_new` 目录执行：
 
 ```powershell
-python project_new/src/03_result_analysis/03_1_data_analysis_table/build_table.py
+python src/03_result_analysis/03_1_data_analysis_table/build_table.py
 ```
 
-可用 `--input-dir`、`--analysis`、`--output` 指定其他路径。脚本核对用户 ID、微博 ID 及分析结果的关联，完成后输出微博总数、有分析结果的微博数和缺失数。输出先写入临时文件，成功后替换目标文件。
+可用 `--input-dir`、`--analysis`、`--output` 指定其他路径。
+
+脚本核对用户 ID、微博 ID 及分析结果的关联，完成后输出微博总数、有分析结果的微博数和缺失数。
+
+输出先写入临时文件，成功后替换目标文件。
 
 ## 字段约定
 
